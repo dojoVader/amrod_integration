@@ -33,6 +33,13 @@ const AMROD_DATA_RESPONSE =
     "amrod_data.json";
 const AMROD_GET_PRODUCT_BRANDING_ENDPOINT = "https://vendorapi.amrod.co.za/api/v1/Products/GetProductsAndBranding";
 const AMROD_GET_PRICES = "https://vendorapi.amrod.co.za/api/v1/Prices/";
+require(__DIR__.DIRECTORY_SEPARATOR.'AmrodCategoryImporter.php');
+require(__DIR__.DIRECTORY_SEPARATOR.'AmroidAPI.php');
+require(__DIR__.DIRECTORY_SEPARATOR.'AmrodProductImporter.php');
+require(__DIR__.DIRECTORY_SEPARATOR.'AmrodStocksImporter.php');
+require(__DIR__.DIRECTORY_SEPARATOR.'AmrodPriceImporter.php');
+require(__DIR__.DIRECTORY_SEPARATOR.'AmrodBrandingImporter.php');
+
 
 function render_option_page()
 {
@@ -111,128 +118,127 @@ function amrodFetchProduct()
 
 function amrodFetchPrices()
 {
-   $header= array (
-    "Authorization" => "Bearer " . get_option(AMROD_TOKEN_KEY)
-   );
-   $response = wp_remote_get(AMROD_GET_PRICES, [
-       "headers" => $header,
-   ]);
-   if(is_wp_error($response) === false){
-         $responseBody = json_decode($response["body"]);
-         // Save the response to a file
+	$token = get_option(AMROD_TOKEN_KEY);
+	if($token === null){
+		throw new \Exception("Token is not authorized");
+	}
+	$amrodAPI = new AmroidAPI($token);
+	$response = $amrodAPI->getPrices();
+	$amrodData = json_decode($response);
+	// Loop through the data and create a product
 
-         foreach($responseBody as $item){
-             try{
-	             $productId = wc_get_product_id_by_sku($item->simplecode);
-	             $product = wc_get_product($productId);
+	foreach ($amrodData as $productObject) {
+		$productImporter = new AmrodPriceImporter($productObject);
+		$productImporter->handle();
+	}
+}
 
-	             $newPrice = (string)(40 * $item->price) / 100;
-                 if($product !== false){
-	                 var_dump($product->get_name('view'));
-	                 $product->set_sale_price($item->price);
-                     $product->set_regular_price($newPrice);
-	                 $product->save();
-	                 // Print to command line that price is saved
-	                 fwrite(STDOUT, "Price for {$item->simplecode} has been updated to {$newPrice}\n");
-                 }
+/**
+ * @throws Exception
+ */
+function amrodCategories(){
+	    $token = get_option(AMROD_TOKEN_KEY);
+        if($token === null){
+            throw new \Exception("Token is not authorized");
+        }
+        $amrodAPI = new AmroidAPI($token);
+        $response = $amrodAPI->getCategories();
+		$amrodData = json_decode($response);
+       // fwrite(STDOUT,"Response has been fetched... processing....");
+		foreach ($amrodData as $categoryObject) {
+			$category = (array) $categoryObject;
+            $importer = new AmrodAPICategoryImporter($category);
+            $importer->handle();
 
-             }
-             catch(Exception $e){
-                    fwrite(STDOUT, "Failed {$e->getMessage()}\n");
-             }
 
+		}
+//        foreach ($amrodData as $productObject) {
+//			$product = (array) $productObject;
+//            $importer = new AmrodCategoryImporter($product["simpleCode"]);
+//            $importer->processPath($product['categories'][0]->path);
+//			//fwrite(STDOUT, "Category for {$product['categories'][0]->name} has been processed \n");
+//
+//		}
 
-         }
-   }
 }
 
 /**
  * @throws WC_Data_Exception
  */
-function amrodProcessResponse()
+function amrodProductImport()
 {
     // Load the Amrod JSON Data file
-    if (file_exists(AMROD_DATA_RESPONSE)) {
-        // Convert to Woocommerce product
-        $amrodData = json_decode(file_get_contents(AMROD_DATA_RESPONSE));
+
+        $token = get_option(AMROD_TOKEN_KEY);
+        if($token === null){
+            throw new \Exception("Token is not authorized");
+        }
+        $amrodAPI = new AmroidAPI($token);
+        $response = $amrodAPI->getProducts();
+        $amrodData = json_decode($response);
         // Loop through the data and create a product
 
         foreach ($amrodData as $productObject) {
-            // Set the Product information
-            $product = (array) $productObject;
-            // Check that the product already exists
-            $productExists = wc_get_product_id_by_sku($product["simpleCode"]);
-            if ($productExists) {
-                continue;
-            }
-            $variantWCProduct = new WC_Product_Simple();
-            $variantWCProduct->set_name($product["productName"]);
-            $variantWCProduct->set_sku($product["simpleCode"]);
-            $variantWCProduct->set_description($product["description"]);
-            $variantWCProduct->set_stock_quantity($product["minimum"]);
-            $parentId = $variantWCProduct->save();
-            // Create the category for the product
-            $category = $product["categories"][0];
-            $term = term_exists($category->name, "product_cat");
-            if ($term !== 0 && $term !== null) {
-                $termId = $term["term_id"];
-            } else {
-                $termId = wp_insert_term($category->name, "product_cat");
-            }
-            $variantWCProduct->set_category_ids([$termId]);
-
-            // Set the images for the product
-            $image = $product["images"][0];
-            // Download the image and set it as the product image
-            $upload_dir = wp_upload_dir();
-            $filename = download_url($image->urls[0]->url);
-            if (is_wp_error($filename) === false) {
-                $imageId = media_handle_sideload(
-                    [
-                        "tmp_name" => $filename,
-                        "name" => $image->name . ".jpg",
-                    ],
-                    $parentId
-                );
-                set_post_thumbnail($parentId, $imageId);
-                $variantWCProduct->set_image_id($imageId);
-            }
-
-            // Save the Data
-            $variantWCProduct->save();
-
-            // Set the variation for each of the Products
-            $subVariant = new WC_Product_Variation();
-            $variants = $product["variants"];
-            foreach ($variants as $variantObject) {
-                $variant = (array) $variantObject;
-
-                $subVariant->set_weight($variant["productDimension"]->weight);
-                $subVariant->set_length($variant["productDimension"]->length);
-                $subVariant->set_width($variant["productDimension"]->width);
-                $subVariant->set_manage_stock(true);
-                $subVariant->set_stock_status("instock");
-                $subVariant->set_backorders("no");
-                $subVariant->set_category_ids([$termId]);
-                $subVariant->set_parent_id($parentId);
-                // Set Attributes for the Variant
-                $subVariant->set_attributes([
-                    "Carton Size Length" =>
-                        $variant["packagingAndDimension"]->cartonSizeDimensionL,
-                    "Carton Size Width" =>
-                        $variant["packagingAndDimension"]->cartonSizeDimensionW,
-                    "Carton Size Height" =>
-                        $variant["packagingAndDimension"]->cartonSizeDimensionH,
-                    "Pieces Per Carton" =>
-                        $variant["packagingAndDimension"]->piecesPerCarton,
-                    "Carton Weight" =>
-                        $variant["packagingAndDimension"]->cartonWeight,
-                ]);
-                $subVariant->save();
-            }
-	        fwrite(STDOUT, "Price for {$variantWCProduct->get_name('view')} has been saved \n");
+	        $productImporter = new AmrodProductImporter($productObject);
+            $productImporter->handleProductImport();
         }
-    }
+
+}
+
+function amrodProcessStocks(){
+	$token = get_option(AMROD_TOKEN_KEY);
+	if($token === null){
+		throw new \Exception("Token is not authorized");
+	}
+	$amrodAPI = new AmroidAPI($token);
+	$response = $amrodAPI->getStocks();
+	$amrodData = json_decode($response);
+	// Loop through the data and create a product
+
+	foreach ($amrodData as $productObject) {
+		$productImporter = new AmrodStocksImporter($productObject);
+		$productImporter->handle();
+	}
+}
+
+function amrodProductImageImport()
+{
+	// Load the Amrod JSON Data file
+
+	$token = get_option(AMROD_TOKEN_KEY);
+	if($token === null){
+		throw new \Exception("Token is not authorized");
+	}
+	$amrodAPI = new AmroidAPI($token);
+	$response = $amrodAPI->getProducts();
+	$amrodData = json_decode($response);
+	// Loop through the data and create a product
+
+	foreach ($amrodData as $productObject) {
+		$productImporter = new AmrodProductImporter($productObject);
+		$productImporter->handleProductImageImport();
+	}
+
+}
+
+function amrodProcessBrands()
+{
+	// Load the Amrod JSON Data file
+
+	$token = get_option(AMROD_TOKEN_KEY);
+	if($token === null){
+		throw new \Exception("Token is not authorized");
+	}
+	$amrodAPI = new AmroidAPI($token);
+	$response = $amrodAPI->getBrandingPrice();
+	$amrodData = json_decode($response);
+	// Loop through the data and create a product
+
+	foreach ($amrodData as $branding) {
+		$productImporter = new AmrodBrandingImporter($branding);
+		$productImporter->handle();
+	}
+
 }
 
 function renderToken()
@@ -260,7 +266,16 @@ function renderToken()
             // Debug the GET from the Request
             amrodFetchProduct();
         }
+	    echo "<a class='button button-primary' href='?page=amrod_api&amrod_mode=categories'> Process Categories</a>";
+	    if (
+		    isset($_GET["amrod_mode"]) &&
+		    $_GET["amrod_mode"] === "categories"
+	    ) {
+		    // Debug the GET from the Request
+		    amrodCategories();
+	    }
     }
+
     echo "<a class='button button-primary' href='?page=amrod_api&amrod_mode=view-product'> View Amrod Product</a>";
     if (isset($_GET["amrod_mode"]) && $_GET["amrod_mode"] === "view-product") {
         // Debug the GET from the Request
@@ -362,11 +377,29 @@ function tokenExpired()
 add_action("admin_menu", "render_option_page");
 add_action("admin_init", "register_settings");
 
+function create_brand_database(){
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'amrod_brand_pricing';
+    $charset_collate = $wpdb->get_charset_collate();
+    $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+        id mediumint(9) NOT NULL AUTO_INCREMENT,
+        brand_method varchar(100) NOT NULL,
+        brand_code varchar(100) NOT NULL,
+        data longtext NOT NULL,
+        PRIMARY KEY  (id)
+    ) $charset_collate;";
+    require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+    dbDelta( $sql );
+}
+
 function setup_cronjob()
 {
-    if (!wp_next_scheduled("amrod_process_response")) {
-        wp_schedule_event(time(), "weekly", "amrod_process_response");
+    if (!wp_next_scheduled("amrod_product_import")) {
+        wp_schedule_event(time(), "weekly", "amrod_product_import");
     }
+	if (!wp_next_scheduled("amrod_image_import")) {
+		wp_schedule_event(time(), "weekly", "amrod_image_import");
+	}
 
     if (!wp_next_scheduled("amrod_fetch_product")) {
         wp_schedule_event(time(), "weekly", "amrod_fetch_product");
@@ -375,6 +408,22 @@ function setup_cronjob()
     if (!wp_next_scheduled("amrod_fetch_prices")) {
         wp_schedule_event(time(), "weekly", "amrod_fetch_prices");
     }
+
+	if (!wp_next_scheduled("amrod_process_categories")) {
+		wp_schedule_event(time(), "weekly", "amrod_process_categories");
+	}
+	if (!wp_next_scheduled("amrod_process_stocks")) {
+		wp_schedule_event(time(), "weekly", "amrod_process_stocks");
+	}
+
+    if (!wp_next_scheduled("amrod_process_brands")) {
+		wp_schedule_event(time(), "weekly", "amrod_process_brands");
+	}
+    
+    
+
+    create_brand_database();
+
 }
 
 function clean_hooks()
@@ -382,11 +431,19 @@ function clean_hooks()
     wp_clear_scheduled_hook("amrod_process_response");
     wp_clear_scheduled_hook("amrod_fetch_product");
     wp_clear_scheduled_hook("amrod_fetch_prices");
+    wp_clear_scheduled_hook("amrod_product_import");
+    wp_clear_scheduled_hook("amrod_image_import");
+    wp_clear_scheduled_hook("amrod_process_stocks");
+    wp_clear_scheduled_hook("amrod_process_brands");
 }
 
 register_activation_hook(__FILE__, "setup_cronjob");
 register_deactivation_hook(__FILE__, "clean_hooks");
 
 add_action("amrod_fetch_product", "amrodFetchProduct");
-add_action("amrod_process_response", "amrodProcessResponse");
+add_action("amrod_product_import", "amrodProductImport");
+add_action("amrod_image_import", "amrodProductImageImport");
 add_action("amrod_fetch_prices", "amrodFetchPrices");
+add_action("amrod_process_categories", "amrodCategories");
+add_action("amrod_process_stocks", "amrodProcessStocks");
+add_action("amrod_process_brands", "amrodProcessBrands");
