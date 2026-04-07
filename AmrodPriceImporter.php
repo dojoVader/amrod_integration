@@ -1,12 +1,38 @@
 <?php
 
+/**
+ * Class AmrodPriceImporter
+ *
+ * Handles synchronising product prices fetched from the Amrod API into
+ * WooCommerce. For each price record returned by the API, this importer
+ * looks up the matching WooCommerce product by SKU and updates its regular
+ * price. A product-level meta flag (`regular-{fullCode}`) is used to prevent
+ * a product from being updated more than once per sync cycle.
+ */
 class AmrodPriceImporter {
 
+	/** @var object|null The raw price object received from the Amrod API. */
 	private $productObject = null;
+
+	/**
+	 * AmrodPriceImporter constructor.
+	 *
+	 * @param object $product A single price record from the Amrod Prices API
+	 *                        response. Expected properties: simplecode, fullCode, price.
+	 */
 	public function __construct($product){
 		$this->productObject = $product;
 	}
 
+	/**
+	 * Executes the price update for the associated product.
+	 *
+	 * Locates the WooCommerce product by its simple code (SKU). If found and
+	 * not already updated (checked via meta flag), it sets the product's
+	 * regular price and marks it as updated to avoid duplicate processing.
+	 *
+	 * @return void
+	 */
 	public function handle(){
 		$productId = wc_get_product_id_by_sku($this->productObject->simplecode);
 		if($productId){

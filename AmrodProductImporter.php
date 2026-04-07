@@ -2,21 +2,61 @@
 
 require_once 'AmrodCategoryImporter.php';
 
-
+/**
+ * Class AmrodProductImporter
+ *
+ * Handles importing and updating WooCommerce products from data returned by
+ * the Amrod Products API (`GET /api/v1/Products/GetProductsAndBranding`).
+ *
+ * Responsibilities are split between two public entry points:
+ *
+ * - {@see handleProductImport()}  – Creates or updates the WooCommerce simple
+ *   product and its child variation records, along with categories, branding
+ *   metadata, template URLs, colour-image references, and branding position
+ *   information. A `completed` meta flag prevents reprocessing.
+ *
+ * - {@see handleProductImageImport()} – Downloads and attaches product images
+ *   (main image + gallery) and category thumbnail images for an already-imported
+ *   product. An `image_processed` meta flag prevents reprocessing.
+ */
 class AmrodProductImporter {
 
+	/** @var int[] IDs of the gallery images uploaded for the current product. */
 	private $galleryImageIds = [];
 
+	/** @var int|null Attachment ID of the default (featured) product image. */
 	private $activeImageId = null;
 
+	/**
+	 * Accumulated product meta data to be persisted on the WooCommerce product.
+	 * Keys include branding guide URLs, template positions, colour image info,
+	 * and branding position/method mappings.
+	 *
+	 * @var array
+	 */
 	private $metadata = [];
 
+	/** @var object|null The raw product object received from the Amrod API. */
 	private $productObject = null;
 
+	/**
+	 * AmrodProductImporter constructor.
+	 *
+	 * @param object $productObject A single product record from the Amrod
+	 *                              Products API response.
+	 */
 	public function __construct( $productObject ) {
 		$this->productObject = $productObject;
 	}
 
+	/**
+	 * Downloads an image from the given URL and sets it as the thumbnail
+	 * (category image) for the specified WooCommerce product category term.
+	 *
+	 * @param  string $image  Fully-qualified URL of the category image.
+	 * @param  int    $termId The WooCommerce term ID of the product category.
+	 * @return void
+	 */
 	private function setCategoryImage( $image, $termId ) {
 
 		$filename = download_url( $image );
@@ -38,6 +78,19 @@ class AmrodProductImporter {
 
 	}
 
+	/**
+	 * Downloads an image from the Amrod CDN and attaches it to a WooCommerce
+	 * product post. If the image is marked as the default (`$isActive`), its
+	 * attachment ID is stored as the featured image; otherwise it is appended
+	 * to the gallery collection.
+	 *
+	 * @param  object $image     Image object from the API. Expected properties:
+	 *                           urls (array of objects with `url`), name (string),
+	 *                           isDefault (bool).
+	 * @param  int    $parent_id The WooCommerce product post ID to attach the image to.
+	 * @param  bool   $isActive  True if this image should be set as the featured image.
+	 * @return void
+	 */
 	private function setProductImage( $image, $parent_id, $isActive = false ) {
 		$upload_dir = wp_upload_dir();
 		$filename   = download_url( $image->urls[0]->url );
@@ -62,11 +115,29 @@ class AmrodProductImporter {
 		fwrite( STDOUT, "Product Image for {$parent_id} has been saved \n" );
 	}
 
+	/**
+	 * Iterates over the accumulated {@see $metadata} array and persists each
+	 * key/value pair as WooCommerce product meta data on the given product.
+	 *
+	 * @param  WC_Product $variantWCProduct The WooCommerce product object to update.
+	 * @return void
+	 */
 	private function saveMeta( $variantWCProduct ) {
 		foreach ( $this->metadata as $key => $value ) {
 			$variantWCProduct->update_meta_data( $key, $value );
 		}
 	}
+	/**
+	 * Downloads and attaches images for an already-imported WooCommerce product.
+	 *
+	 * Looks up the product by SKU. If the `image_processed` meta is already set
+	 * to `"done"`, the method returns early to prevent duplicate uploads. Otherwise
+	 * it downloads each product image (setting the default one as the featured image
+	 * and the rest as gallery images), downloads category thumbnail images, updates
+	 * the category assignments, and marks the product as fully processed.
+	 *
+	 * @return void
+	 */
 	public function handleProductImageImport() {
 		$product = (array) $this->productObject;
 		// Check that the product already exists
@@ -118,6 +189,25 @@ class AmrodProductImporter {
 
 
 
+	/**
+	 * Creates or updates a WooCommerce product and its variants from an Amrod
+	 * product record.
+	 *
+	 * - If the product (matched by SKU / simple code) does not yet exist, a new
+	 *   `WC_Product_Simple` is created with name, description, and zero initial
+	 *   stock.
+	 * - If the product already exists and its `completed` meta is `"done"`, the
+	 *   method returns early to avoid reprocessing.
+	 * - Category terms are created/reused via {@see AmrodCategoryImporter}.
+	 * - Each variant from the API is imported as a `WC_Product_Variation` with
+	 *   physical dimensions, packaging attributes, and stock settings.
+	 * - Branding guide URLs, template positions, colour image references, and
+	 *   branding position/method mappings are stored as product meta data.
+	 * - On completion the `completed` meta is set to `"done"`.
+	 *
+	 * @return void
+	 * @throws WC_Data_Exception If setting product data fails.
+	 */
 	public function handleProductImport() {
 		// Set the Product information
 		$product = (array) $this->productObject;

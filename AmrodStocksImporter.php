@@ -1,12 +1,38 @@
 <?php
 
+/**
+ * Class AmrodStocksImporter
+ *
+ * Handles synchronising stock quantities fetched from the Amrod API into
+ * WooCommerce. For each stock record returned by the API, this importer
+ * locates the matching WooCommerce product by SKU and updates its managed
+ * stock quantity. A product-level meta flag (`stock-{fullCode}`) prevents a
+ * product from being updated more than once per sync cycle.
+ */
 class AmrodStocksImporter {
 
+	/** @var object|null The raw stock object received from the Amrod API. */
 	private $productObject = null;
+
+	/**
+	 * AmrodStocksImporter constructor.
+	 *
+	 * @param object $product A single stock record from the Amrod Stock API
+	 *                        response. Expected properties: simpleCode, fullCode, stock.
+	 */
 	public function __construct($product){
 		$this->productObject = $product;
 	}
 
+	/**
+	 * Executes the stock-quantity update for the associated product.
+	 *
+	 * Locates the WooCommerce product by its simple code (SKU). If found and
+	 * not already updated (checked via meta flag), it sets the product's
+	 * stock quantity and marks it as updated to avoid duplicate processing.
+	 *
+	 * @return void
+	 */
 	public function handle(){
 		$productId = wc_get_product_id_by_sku($this->productObject->simpleCode);
 		if($productId){
